@@ -30,7 +30,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, onLogout }) 
           <div className="bg-emerald-500 p-2 rounded-xl shadow-lg shadow-emerald-500/20">
             <Leaf className="text-white" size={24} />
           </div>
-          <h1 className="text-xl font-bold text-white tracking-tight">RumahIjo</h1>
+          <h1 className="text-xl font-bold text-white tracking-tight">AuraSmart</h1>
         </div>
 
         <nav className="flex-1 px-4 space-y-2 mt-4">

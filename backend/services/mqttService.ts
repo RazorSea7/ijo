@@ -176,7 +176,7 @@ export const initMqtt = (io: Server): void => {
           const now = Date.now();
           if (now - lastNotifTime > NOTIF_COOLDOWN) {
             lastNotifTime = now;
-            const pesanFinal = `📢 *LAPORAN SISTEM SEMAI*\n\n${pesanNotif.join("\n\n")}`;
+            const pesanFinal = `📢 *LAPORAN SISTEM ZENITH*\n\n${pesanNotif.join("\n\n")}`;
 
             axios
               .post(`https://api.telegram.org/bot${ENV.TG_TOKEN}/sendMessage`, {

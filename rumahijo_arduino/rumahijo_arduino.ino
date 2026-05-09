@@ -167,8 +167,8 @@ void setupWiFi() {
   // ESP tidak nyangkut selamanya sebagai Access Point.
   wm.setConfigPortalTimeout(180); 
 
-  // AP bernama "SEMAI-SmartFarm", pass "admin123"
-  if (!wm.autoConnect("SEMAI-SmartFarm", "admin123")) {
+  // AP bernama "Zenith Smart System", pass "admin123"
+  if (!wm.autoConnect("Zenith_SmartSystem", "admin123")) {
     Serial.println("[WiFi] Gagal konek atau timeout portal.");
     // Biarkan saja, jangan ESP.restart(), biarkan offline mode berjalan
   } else {

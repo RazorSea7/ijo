@@ -19,9 +19,9 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ isOnline, isEspOnline
     return (
         <header className="flex justify-between items-center bg-slate-800 p-6 rounded-2xl shadow-xl">
             <div>
-                <h1 className="text-2xl font-bold text-white">SEMAI Smart Farm</h1>
+                <h1 className="text-2xl font-bold text-white">Zenith Smart System</h1>
                 <p className="text-slate-400 text-sm">
-                    Greenhouse Zone A - Live Monitoring
+                    Greenhouse - Live Monitoring
                 </p>
             </div>
             
