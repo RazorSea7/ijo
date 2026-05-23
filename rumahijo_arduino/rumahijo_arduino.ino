@@ -32,6 +32,7 @@
 #include <DHT.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <HTTPUpdate.h>
 #include <Preferences.h>
 #include "config.h"
 
@@ -64,12 +65,12 @@ float cahayaThreshold = 50.0;   // %   — lampu ON jika cahaya < nilai ini
 // ─────────────────────────────────────────────
 //  TIMER (dalam milidetik)
 // ─────────────────────────────────────────────
-const unsigned long INTERVAL_BACA    = 10000;    // baca sensor setiap 5 detik
-const unsigned long DURASI_TRIGGER   = 10000;   // kondisi harus bertahan 10 detik → relay ON
-const unsigned long DURASI_ON_POMPA  = 15000;   // pompa menyala minimal 15 detik
-const unsigned long DURASI_ON_KIPAS  = 45000;   // kipas menyala minimal 45 detik
-const unsigned long DURASI_ON_LAMPU  = 60000;   // lampu menyala minimal 60 detik
-const unsigned long DURASI_COOLDOWN  = 120000;  // cooldown 120 detik setelah relay mati
+const unsigned long INTERVAL_BACA    = 2000;    // baca sensor setiap 2 detik
+const unsigned long DURASI_TRIGGER   = 6000;   // kondisi harus bertahan 6 detik → relay ON
+const unsigned long DURASI_ON_POMPA  = 2000;   // pompa menyala minimal 2 detik
+const unsigned long DURASI_ON_KIPAS  = 10000;   // kipas menyala minimal 10 detik
+const unsigned long DURASI_ON_LAMPU  = 10000;   // lampu menyala minimal 10 detik
+const unsigned long DURASI_COOLDOWN  = 10000;  // cooldown 10 detik setelah relay mati
 
 // ─────────────────────────────────────────────
 //  STATE MESIN UNTUK SETIAP RELAY
@@ -89,6 +90,7 @@ struct RelayControl {
   unsigned long timerMulai;   // kapan state ini dimulai
   unsigned long durasiOn;     // durasi minimal ON (berbeda tiap relay)
   bool          statusOn;     // apakah relay sedang HIGH
+  unsigned long timerNormal;  // sejak kapan kondisi kembali normal (Off-Debounce)
 };
 
 // ─────────────────────────────────────────────
@@ -102,9 +104,9 @@ Preferences preferences;
 // ─────────────────────────────────────────────
 //  DATA RELAY
 // ─────────────────────────────────────────────
-RelayControl rcPompa = { STATE_IDLE, 0, DURASI_ON_POMPA, false };
-RelayControl rcKipas = { STATE_IDLE, 0, DURASI_ON_KIPAS, false };
-RelayControl rcLampu = { STATE_IDLE, 0, DURASI_ON_LAMPU, false };
+RelayControl rcPompa = { STATE_IDLE, 0, DURASI_ON_POMPA, false, 0 };
+RelayControl rcKipas = { STATE_IDLE, 0, DURASI_ON_KIPAS, false, 0 };
+RelayControl rcLampu = { STATE_IDLE, 0, DURASI_ON_LAMPU, false, 0 };
 
 // ─────────────────────────────────────────────
 //  VARIABEL SENSOR & STATUS
@@ -114,46 +116,19 @@ float humUdara = 0;
 float tanah    = 0;
 float cahaya   = 0;
 
-bool overrideKipas = false;
-bool overridePompa = false;
-bool overrideLampu = false;
+int overrideKipas = 0; // 0=AUTO, 1=ON, 2=OFF
+int overridePompa = 0;
+int overrideLampu = 0;
 
-// bool statusKipas = false;
-// bool statusPompa = false;
-// bool statusLampu = false;
+// Flag untuk OTA
+bool otaTriggered = false;
+char otaTargetUrl[256] = ""; // char[] statis lebih aman dari String (hindari heap fragmentation)
 
-// Anti-spam Telegram — hanya kirim notif saat state berubah ON
-// bool notifKipas = false;
-// bool notifPompa = false;
-// bool notifLampu = false;
+// Flag untuk defer publish & preferences write keluar dari MQTT callback
+bool pendingPublish = false;
+bool pendingPreferencesSave = false;
 
 unsigned long lastBaca = 0;
-
-
-// ═══════════════════════════════════════════════════════
-//  TELEGRAM — Kirim notifikasi via HTTPClient
-// ═══════════════════════════════════════════════════════
-// void kirimTelegram(String pesan) {
-//   if (WiFi.status() != WL_CONNECTED) return;
-
-//   HTTPClient http;
-//   String url = "https://api.telegram.org/bot";
-//   url += TG_TOKEN;
-//   url += "/sendMessage?chat_id=";
-//   url += TG_CHAT_ID;
-//   url += "&text=";
-
-//   // Encode spasi dan karakter khusus
-//   pesan.replace(" ", "%20");
-//   pesan.replace("\n", "%0A");
-//   url += pesan;
-
-//   http.begin(url);
-//   int code = http.GET();
-//   Serial.printf("[Telegram] HTTP %d\n", code);
-//   http.end();
-// }
-
 
 // ═══════════════════════════════════════════════════════
 //  WIFI — Koneksi & reconnect (WiFiManager)
@@ -188,74 +163,114 @@ void jagaWiFi() {
   }
 }
 
+void publishData();
 
 // ═══════════════════════════════════════════════════════
 //  MQTT CALLBACK — terima perintah override dari dashboard
 //  Payload JSON: {"kipas":true} / {"pompa":false} / dll
 // ═══════════════════════════════════════════════════════
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  String pesan = "";
-  for (unsigned int i = 0; i < length; i++) pesan += (char)payload[i];
-  Serial.printf("[MQTT] Terima | %s | %s\n", topic, pesan.c_str());
+  Serial.printf("[MQTT] Terima | %s\n", topic);
 
-  StaticJsonDocument<200> doc;
-  DeserializationError err = deserializeJson(doc, pesan);
+  // Abaikan pesan dari topik yang tidak dikenal
+  bool isControl  = strcmp(topic, TOPIC_CONTROL) == 0;
+  bool isSettings = strcmp(topic, TOPIC_SETTINGS) == 0;
+  bool isOTA      = strcmp(topic, TOPIC_OTA) == 0;
+  if (!isControl && !isSettings && !isOTA) return;
+
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, payload, length);
   if (err) {
     Serial.printf("[MQTT] JSON error: %s\n", err.c_str());
     return;
   }
 
-  // Override langsung nyalakan/matikan relay, abaikan timer
-  if (doc.containsKey("kipas")) {
-    overrideKipas = doc["kipas"].as<bool>();
-    if (overrideKipas) {
-      digitalWrite(RELAY_KIPAS, HIGH);
-      rcKipas.statusOn = true;
-      Serial.println("[Override] Kipas: MANUAL ON");
-    } else {
-      digitalWrite(RELAY_KIPAS, LOW);
-      rcKipas.statusOn  = false;
-      rcKipas.state     = STATE_IDLE; // Reset ke auto-mode normal
-      Serial.println("[Override] Kipas: MANUAL OFF → auto-mode resumed");
+  // ─── TOPIC_CONTROL: relay override ───────────────────
+  if (isControl) {
+    if (doc.containsKey("kipas")) {
+      int cmd = doc["kipas"].is<bool>() ? (doc["kipas"].as<bool>() ? 1 : 0) : doc["kipas"].as<int>();
+      overrideKipas = cmd;
+      if (cmd == 1) {
+        digitalWrite(RELAY_KIPAS, HIGH);
+        rcKipas.statusOn = true;
+        Serial.println("[Override] Kipas: MANUAL ON");
+      } else if (cmd == 2) {
+        digitalWrite(RELAY_KIPAS, LOW);
+        rcKipas.statusOn  = false;
+        Serial.println("[Override] Kipas: MANUAL OFF");
+      } else {
+        digitalWrite(RELAY_KIPAS, LOW);
+        rcKipas.statusOn    = false;
+        rcKipas.state       = STATE_IDLE;
+        rcKipas.timerNormal = 0;
+        Serial.println("[Override] Kipas: AUTO RESUMED");
+      }
     }
-  }
-  if (doc.containsKey("pompa")) {
-    overridePompa = doc["pompa"].as<bool>();
-    if (overridePompa) {
-      digitalWrite(RELAY_POMPA, HIGH);
-      rcPompa.statusOn = true;
-      Serial.println("[Override] Pompa: MANUAL ON");
-    } else {
-      digitalWrite(RELAY_POMPA, LOW);
-      rcPompa.statusOn   = false;
-      rcPompa.state      = STATE_IDLE;
-      Serial.println("[Override] Pompa: MANUAL OFF → auto-mode resumed");
+    if (doc.containsKey("pompa")) {
+      int cmd = doc["pompa"].is<bool>() ? (doc["pompa"].as<bool>() ? 1 : 0) : doc["pompa"].as<int>();
+      overridePompa = cmd;
+      if (cmd == 1) {
+        digitalWrite(RELAY_POMPA, HIGH);
+        rcPompa.statusOn = true;
+        Serial.println("[Override] Pompa: MANUAL ON");
+      } else if (cmd == 2) {
+        digitalWrite(RELAY_POMPA, LOW);
+        rcPompa.statusOn    = false;
+        Serial.println("[Override] Pompa: MANUAL OFF");
+      } else {
+        digitalWrite(RELAY_POMPA, LOW);
+        rcPompa.statusOn    = false;
+        rcPompa.state       = STATE_IDLE;
+        rcPompa.timerNormal = 0;
+        Serial.println("[Override] Pompa: AUTO RESUMED");
+      }
     }
-  }
-  if (doc.containsKey("lampu")) {
-    overrideLampu = doc["lampu"].as<bool>();
-    if (overrideLampu) {
-      digitalWrite(RELAY_LAMPU, HIGH);
-      rcLampu.statusOn = true;
-      Serial.println("[Override] Lampu: MANUAL ON");
-    } else {
-      digitalWrite(RELAY_LAMPU, LOW);
-      rcLampu.statusOn   = false;
-      rcLampu.state      = STATE_IDLE;
-      Serial.println("[Override] Lampu: MANUAL OFF → auto-mode resumed");
+    if (doc.containsKey("lampu")) {
+      int cmd = doc["lampu"].is<bool>() ? (doc["lampu"].as<bool>() ? 1 : 0) : doc["lampu"].as<int>();
+      overrideLampu = cmd;
+      if (cmd == 1) {
+        digitalWrite(RELAY_LAMPU, HIGH);
+        rcLampu.statusOn = true;
+        Serial.println("[Override] Lampu: MANUAL ON");
+      } else if (cmd == 2) {
+        digitalWrite(RELAY_LAMPU, LOW);
+        rcLampu.statusOn    = false;
+        Serial.println("[Override] Lampu: MANUAL OFF");
+      } else {
+        digitalWrite(RELAY_LAMPU, LOW);
+        rcLampu.statusOn    = false;
+        rcLampu.state       = STATE_IDLE;
+        rcLampu.timerNormal = 0;
+        Serial.println("[Override] Lampu: AUTO RESUMED");
+      }
     }
+    // Defer publish ke loop() — anti-pattern publish-in-callback PubSubClient
+    pendingPublish = true;
   }
-  
-  // Terima pengaturan Threshold
-  if (doc.containsKey("temp") || doc.containsKey("hum") || doc.containsKey("light")) {
-    if (doc.containsKey("temp")) suhuThreshold = doc["temp"].as<float>();
-    if (doc.containsKey("hum")) soilThreshold = doc["hum"].as<float>();
+
+  // ─── TOPIC_SETTINGS: update threshold ────────────────
+  else if (isSettings) {
+    if (doc.containsKey("temp"))  suhuThreshold   = doc["temp"].as<float>();
+    if (doc.containsKey("hum"))   soilThreshold   = doc["hum"].as<float>();
     if (doc.containsKey("light")) cahayaThreshold = doc["light"].as<float>();
-    
-    preferences.putFloat("suhu", suhuThreshold);
-    preferences.putFloat("soil", soilThreshold);
-    preferences.putFloat("cahaya", cahayaThreshold);
-    Serial.printf("[Settings] Update -> Suhu:%.1f Soil:%.1f Cahaya:%.1f\n", suhuThreshold, soilThreshold, cahayaThreshold);
+    pendingPreferencesSave = true; // Tulis ke flash di-defer ke loop()
+    pendingPublish = true;
+    Serial.printf("[Settings] Diterima -> Suhu:%.1f Soil:%.1f Cahaya:%.1f\n",
+                  suhuThreshold, soilThreshold, cahayaThreshold);
+  }
+
+  // ─── TOPIC_OTA: trigger firmware update ──────────────
+  else if (isOTA && doc.containsKey("url")) {
+    strlcpy(otaTargetUrl, doc["url"].as<const char*>(), sizeof(otaTargetUrl));
+    otaTriggered = true;
+    Serial.printf("[OTA] Perintah update diterima: %s\n", otaTargetUrl);
+    // Kirim status MENUNGGU — publish di dalam OTA callback masih aman karena
+    // ini adalah single short publish, bukan nested publish dari telemetri
+    StaticJsonDocument<64> replyDoc;
+    replyDoc["state_ota"] = "MENUNGGU";
+    char buffer[64];
+    serializeJson(replyDoc, buffer);
+    mqttClient.publish(TOPIC_TELEMETRY, buffer);
   }
 }
 
@@ -276,7 +291,8 @@ void jagaMQTT() {
         Serial.println("[MQTT] Terhubung!");
         mqttClient.subscribe(TOPIC_CONTROL);
         mqttClient.subscribe(TOPIC_SETTINGS);
-        Serial.printf("[MQTT] Subscribe: %s & %s\n", TOPIC_CONTROL, TOPIC_SETTINGS);
+        mqttClient.subscribe(TOPIC_OTA);
+        Serial.printf("[MQTT] Subscribe: %s, %s, & %s\n", TOPIC_CONTROL, TOPIC_SETTINGS, TOPIC_OTA);
       } else {
         Serial.printf("[MQTT] Gagal rc=%d\n", mqttClient.state());
       }
@@ -295,13 +311,19 @@ void bacaSensor() {
   if (!isnan(t)) suhu     = t;
   if (!isnan(h)) humUdara = h;
 
-  // Soil Moisture
-  int rawSoil = analogRead(SOIL_PIN);
-  tanah = constrain(map(rawSoil, SOIL_KERING, SOIL_BASAH, 0, 100), 0, 100);
+  // Soil Moisture — rata-rata 4 sampel untuk meredam noise ADC ESP32
+  long rawSoilSum = 0;
+  for (int i = 0; i < 4; i++) rawSoilSum += analogRead(SOIL_PIN);
+  int rawSoil = (int)(rawSoilSum / 4);
+  float fTanah = (float)(rawSoil - SOIL_KERING) * 100.0f / (float)(SOIL_BASAH - SOIL_KERING);
+  tanah = constrain(fTanah, 0.0f, 100.0f);
 
-  // LDR Cahaya
-  int rawLDR = analogRead(LDR_PIN);
-  cahaya = constrain(map(rawLDR, LDR_GELAP, LDR_TERANG, 0, 100), 0, 100);
+  // LDR Cahaya — rata-rata 4 sampel untuk meredam noise ADC ESP32
+  long rawLDRSum = 0;
+  for (int i = 0; i < 4; i++) rawLDRSum += analogRead(LDR_PIN);
+  int rawLDR = (int)(rawLDRSum / 4);
+  float fCahaya = (float)(rawLDR - LDR_GELAP) * 100.0f / (float)(LDR_TERANG - LDR_GELAP);
+  cahaya = constrain(fCahaya, 0.0f, 100.0f);
 
   Serial.printf("[Sensor] Suhu:%.1f°C | Hum:%.1f%% | Tanah:%.1f%% | Cahaya:%.1f%%\n",
                 suhu, humUdara, tanah, cahaya);
@@ -324,17 +346,13 @@ void bacaSensor() {
 //
 //  COOLDOWN ──(120 detik selesai)──► IDLE
 // ═══════════════════════════════════════════════════════
-// void updateRelay(RelayControl &rc, int pin, bool kondisiTerpenuhi,
-//                  bool overrideOn, bool &notifFlag,
-//                  const char* namaRelay, String pesanNotif) {
 void updateRelay(RelayControl &rc, int pin, bool kondisiTerpenuhi,
-                 bool &overrideOn, const char* namaRelay) {
+                 int overrideMode, const char* namaRelay) {
 
   unsigned long now = millis();
 
   // ── Override aktif: bypass semua state machine ──────
-  // (relay sudah di-handle langsung di callback MQTT)
-  if (overrideOn) return;
+  if (overrideMode != 0) return;
 
   switch (rc.state) {
 
@@ -354,17 +372,14 @@ void updateRelay(RelayControl &rc, int pin, bool kondisiTerpenuhi,
         rc.state = STATE_IDLE;
         Serial.printf("[%s] Kondisi tidak bertahan, reset ke IDLE\n", namaRelay);
       } else if (now - rc.timerMulai >= DURASI_TRIGGER) {
-        // 10 detik terpenuhi → nyalakan relay
+        // Durasi trigger terpenuhi → nyalakan relay
         digitalWrite(pin, HIGH);
-        rc.statusOn   = true;
-        rc.state      = STATE_ON;
-        rc.timerMulai = now;
-        Serial.printf("[%s] 10 detik terpenuhi → RELAY ON\n", namaRelay);
+        rc.statusOn    = true;
+        rc.state       = STATE_ON;
+        rc.timerMulai  = now;
+        rc.timerNormal = 0; // Pastikan off-debounce selalu mulai bersih
+        Serial.printf("[%s] %lu detik terpenuhi → RELAY ON\n", namaRelay, DURASI_TRIGGER/1000);
 
-        // if (!notifFlag) {
-        //   kirimTelegram(pesanNotif);
-        //   notifFlag = true;
-        // }
       }
       break;
 
@@ -373,15 +388,25 @@ void updateRelay(RelayControl &rc, int pin, bool kondisiTerpenuhi,
       if (now - rc.timerMulai >= rc.durasiOn) {
         // Durasi minimal tercapai
         if (!kondisiTerpenuhi) {
-          // Kondisi sudah normal → matikan relay, masuk cooldown
-          digitalWrite(pin, LOW);
-          rc.statusOn   = false;
-          rc.state      = STATE_COOLDOWN;
-          rc.timerMulai = now;
-          // notifFlag     = false;
-          Serial.printf("[%s] Kondisi normal → RELAY OFF → cooldown 120 detik\n", namaRelay);
+          if (rc.timerNormal == 0) {
+            rc.timerNormal = now; // Mulai hitung durasi normal (off-debounce)
+            Serial.printf("[%s] Kondisi terdeteksi normal, memulai off-debounce...\n", namaRelay);
+          } else if (now - rc.timerNormal >= DURASI_TRIGGER) {
+            // Kondisi sudah terbukti normal stabil selama DURASI_TRIGGER → matikan relay
+            digitalWrite(pin, LOW);
+            rc.statusOn   = false;
+            rc.state      = STATE_COOLDOWN;
+            rc.timerMulai = now;
+            rc.timerNormal = 0;
+            Serial.printf("[%s] Kondisi normal stabil → RELAY OFF → cooldown\n", namaRelay);
+          }
+        } else {
+          // Kondisi buruk kembali → reset timer off-debounce
+          if (rc.timerNormal != 0) {
+            rc.timerNormal = 0;
+            Serial.printf("[%s] Kondisi buruk kembali, membatalkan off-debounce\n", namaRelay);
+          }
         }
-        // Kalau kondisi masih buruk, relay tetap ON (tidak masuk cooldown)
       }
       // Kalau durasi minimal belum selesai, relay tetap ON apapun kondisinya
       break;
@@ -400,34 +425,6 @@ void updateRelay(RelayControl &rc, int pin, bool kondisiTerpenuhi,
 // ═══════════════════════════════════════════════════════
 //  KONTROL SEMUA RELAY
 // ═══════════════════════════════════════════════════════
-// void kontrolRelay() {
-//   // Kipas — kondisi: suhu > 30°C
-//   updateRelay(
-//     rcKipas, RELAY_KIPAS,
-//     (suhu > SUHU_THRESHOLD),
-//     overrideKipas, notifKipas,
-//     "KIPAS",
-//     "Kipas ON\nAlasan: Suhu " + String(suhu, 1) + "C > " + String(SUHU_THRESHOLD, 0) + "C selama 10 detik"
-//   );
-
-//   // Pompa — kondisi: tanah < 40%
-//   updateRelay(
-//     rcPompa, RELAY_POMPA,
-//     (tanah < SOIL_THRESHOLD),
-//     overridePompa, notifPompa,
-//     "POMPA",
-//     "Pompa Air ON\nAlasan: Tanah " + String(tanah, 1) + "% < " + String(SOIL_THRESHOLD, 0) + "% selama 10 detik"
-//   );
-
-//   // Lampu — kondisi: cahaya < 50%
-//   updateRelay(
-//     rcLampu, RELAY_LAMPU,
-//     (cahaya < CAHAYA_THRESHOLD),
-//     overrideLampu, notifLampu,
-//     "LAMPU",
-//     "Lampu LED ON\nAlasan: Cahaya " + String(cahaya, 1) + "% < " + String(CAHAYA_THRESHOLD, 0) + "% selama 10 detik"
-//   );
-// }
 void kontrolRelay() {
   // Kipas — kondisi: suhu > suhuThreshold
   updateRelay(
@@ -456,6 +453,9 @@ void kontrolRelay() {
 //  PUBLISH DATA KE MQTT
 // ═══════════════════════════════════════════════════════
 void publishData() {
+  // Jangan publish jika MQTT tidak terkoneksi
+  if (!mqttClient.connected()) return;
+
   // Label state untuk info di dashboard
   const char* stateLabel[] = { "IDLE", "TRIGGERED", "ON", "COOLDOWN" };
 
@@ -468,15 +468,15 @@ void publishData() {
   doc["status_kipas"]     = rcKipas.statusOn;
   doc["status_pompa"]     = rcPompa.statusOn;
   doc["status_lampu"]     = rcLampu.statusOn;
-  doc["state_kipas"]      = stateLabel[rcKipas.state];
-  doc["state_pompa"]      = stateLabel[rcPompa.state];
-  doc["state_lampu"]      = stateLabel[rcLampu.state];
+  doc["state_kipas"]      = overrideKipas != 0 ? "MANUAL" : stateLabel[rcKipas.state];
+  doc["state_pompa"]      = overridePompa != 0 ? "MANUAL" : stateLabel[rcPompa.state];
+  doc["state_lampu"]      = overrideLampu != 0 ? "MANUAL" : stateLabel[rcLampu.state];
 
-  char buffer[400];
+  char buffer[512]; // Naikkan ke 512 agar konsisten dengan setBufferSize(512)
   serializeJson(doc, buffer);
 
   bool ok = mqttClient.publish(TOPIC_TELEMETRY, buffer);
-  Serial.printf("[MQTT] Publish %s → %s\n", ok ? "OK" : "GAGAL", buffer);
+  Serial.printf("[MQTT] Publish %s\n", ok ? "OK" : "GAGAL");
 }
 
 
@@ -508,8 +508,10 @@ void setup() {
   // Koneksi WiFi dengan WiFiManager
   setupWiFi();
 
-  // Setup MQTT
+  // Setup MQTT — perbesar buffer dari default 256 byte ke 512 byte
+  // untuk menampung payload JSON yang lebih besar
   espClient.setInsecure();
+  mqttClient.setBufferSize(512);
   mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
 
@@ -529,6 +531,57 @@ void loop() {
     mqttClient.loop();  // proses pesan masuk (callback)
   }
 
+  // Eksekusi OTA jika dijadwalkan (di luar callback MQTT)
+  if (otaTriggered) {
+    otaTriggered = false;
+    Serial.println("[OTA] Memulai HTTP Update...");
+    
+    StaticJsonDocument<256> replyDoc;
+    replyDoc["state_ota"] = "MENDOWNLOAD";
+    char buffer[256];
+    serializeJson(replyDoc, buffer);
+    mqttClient.publish(TOPIC_TELEMETRY, buffer);
+
+    // Publish status MENGINSTALL tepat sebelum update dimulai.
+    // Setelah HTTP_UPDATE_OK, ESP32 langsung restart — tidak sempat publish lagi.
+    // Sehingga status ini menjadi pesan terakhir yang diterima backend.
+    StaticJsonDocument<64> preOtaDoc;
+    preOtaDoc["state_ota"] = "MENGINSTALL";
+    char preOtaBuf[64];
+    serializeJson(preOtaDoc, preOtaBuf);
+    mqttClient.publish(TOPIC_TELEMETRY, preOtaBuf);
+    mqttClient.loop(); // Pastikan paket terkirim sebelum koneksi terputus
+    delay(200);        // Beri waktu broker menerima pesan
+
+    t_httpUpdate_return ret;
+    
+    if (otaTargetUrl[0] != '\0' && strncmp(otaTargetUrl, "https://", 8) == 0) {
+      WiFiClientSecure clientOTASecure;
+      clientOTASecure.setInsecure();
+      ret = httpUpdate.update(clientOTASecure, otaTargetUrl);
+    } else {
+      WiFiClient clientOTA;
+      ret = httpUpdate.update(clientOTA, otaTargetUrl);
+    }
+
+    switch (ret) {
+      case HTTP_UPDATE_FAILED:
+        Serial.printf("[OTA] Gagal: %s\n", httpUpdate.getLastErrorString().c_str());
+        replyDoc["state_ota"] = "GAGAL";
+        break;
+      case HTTP_UPDATE_NO_UPDATES:
+        Serial.println("[OTA] Tidak ada update baru.");
+        replyDoc["state_ota"] = "TIDAK_ADA_UPDATE";
+        break;
+      case HTTP_UPDATE_OK:
+        Serial.println("[OTA] Update berhasil, me-restart...");
+        replyDoc["state_ota"] = "BERHASIL";
+        break;
+    }
+    serializeJson(replyDoc, buffer);
+    mqttClient.publish(TOPIC_TELEMETRY, buffer);
+  }
+
   // Baca sensor + kontrol relay + publish setiap INTERVAL_BACA ms
   unsigned long now = millis();
   if (now - lastBaca >= INTERVAL_BACA) {
@@ -542,8 +595,28 @@ void loop() {
 
   // Publish data setiap INTERVAL_BACA
   static unsigned long lastPublish = 0;
+  bool publishedThisCycle = false;
   if (now - lastPublish >= INTERVAL_BACA) {
     lastPublish = now;
     publishData();
+    publishedThisCycle = true;
+  }
+
+  // Defer: Simpan threshold ke NVS Flash di luar MQTT callback
+  if (pendingPreferencesSave) {
+    pendingPreferencesSave = false;
+    preferences.putFloat("suhu", suhuThreshold);
+    preferences.putFloat("soil", soilThreshold);
+    preferences.putFloat("cahaya", cahayaThreshold);
+    Serial.printf("[NVS] Tersimpan -> Suhu:%.1f Soil:%.1f Cahaya:%.1f\n", suhuThreshold, soilThreshold, cahayaThreshold);
+  }
+
+  // Defer: Publish setelah override — hanya jika belum publish di siklus ini
+  // Mencegah double publish yang memboroskan buffer MQTT
+  if (pendingPublish && !publishedThisCycle) {
+    pendingPublish = false;
+    publishData();
+  } else {
+    pendingPublish = false; // Buang flag jika sudah publish di siklus ini
   }
 }

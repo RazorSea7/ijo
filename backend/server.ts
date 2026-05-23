@@ -4,16 +4,23 @@ import cors from "cors";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { connectDB } from "./config/db.js";
-import { initMqtt, isEspOnline, getMqttClient } from "./services/mqttService.js";
+import {
+  initMqtt,
+  isEspOnline,
+  getMqttClient,
+} from "./services/mqttService.js";
+import { startCleanupJob } from "./services/cleanupService.js";
 
 import authRoutes from "./routes/authRoutes.js";
 import telemetryRoutes from "./routes/telemetryRoutes.js";
 import settingsRoutes from "./routes/settingsRoutes.js";
 import controlRoutes from "./routes/controlRoutes.js";
+import otaRoutes from "./routes/otaRoutes.js";
 
 connectDB();
 
 const app = express();
+app.set("trust proxy", 1);
 const corsOrigin = ENV.NODE_ENV === "production" ? ENV.FRONTEND_URL : "*";
 
 app.use(
@@ -42,6 +49,7 @@ app.use("/api", authRoutes);
 app.use("/api/telemetry", telemetryRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/control", controlRoutes);
+app.use("/api/ota", otaRoutes);
 
 const gracefulShutdown = () => {
   console.log("Shutting down gracefully...");
@@ -58,6 +66,8 @@ const gracefulShutdown = () => {
 process.on("SIGTERM", gracefulShutdown);
 process.on("SIGINT", gracefulShutdown);
 
+startCleanupJob();
+
 httpServer.listen(ENV.PORT, () =>
-  console.log(`🚀 Server + Socket.io running on port ${ENV.PORT}`)
+  console.log(`🚀 Server + Socket.io running on port ${ENV.PORT}`),
 );
