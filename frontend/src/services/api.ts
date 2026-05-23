@@ -26,9 +26,21 @@ apiClient.interceptors.response.use(
     },
 );
 
-export const getTelemetry = async (filter = "20"): Promise<TelemetryData[]> => {
-    const response = await apiClient.get<TelemetryData[]>("/telemetry", { params: { filter } });
+export const getTelemetry = async (range = "30m", bin = "none"): Promise<TelemetryData[]> => {
+    const response = await apiClient.get<TelemetryData[]>("/telemetry", { params: { range, bin } });
     return response.data;
+};
+
+export interface TableResponse {
+  docs: TelemetryData[];
+  total: number;
+  page: number;
+  totalPages: number;
+}
+
+export const getTableData = async (page = 1, limit = 50): Promise<TableResponse> => {
+  const response = await apiClient.get<TableResponse>("/telemetry/table", { params: { page, limit } });
+  return response.data;
 };
 
 export const getAnalytics = async (): Promise<AnalyticsData> => {
@@ -37,11 +49,36 @@ export const getAnalytics = async (): Promise<AnalyticsData> => {
 };
 
 export const sendControl = async (
-  device: string,
-  status: boolean,
+    device: string,
+    status: boolean | number,
 ): Promise<{ message: string }> => {
   const response = await apiClient.post("/control", { device, status });
   return response.data;
+};
+
+export const uploadFirmware = async (file: File): Promise<{ message: string }> => {
+    const formData = new FormData();
+    formData.append("firmware", file);
+    
+    const baseUrl = import.meta.env.VITE_API_URL || "http://localhost:5000";
+    
+    // Kirim URL Backend agar ESP32 tahu dari mana harus mendownloadnya
+    formData.append("serverUrl", baseUrl);
+
+    const token = localStorage.getItem("app_token");
+
+    // apiClient tidak bisa dipakai langsung dengan FormData di Axios tanpa setup header khusus, 
+    // jadi kita pakai fetch bawaan browser agar boundary multipart ter-generate otomatis.
+    const response = await fetch(`${baseUrl}/api/ota/upload`, {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${token}`
+        },
+        body: formData,
+    });
+
+    if (!response.ok) throw new Error("Gagal mengunggah firmware");
+    return response.json();
 };
 
 export const login = async (username: string, password: string): Promise<{ token: string }> => {
