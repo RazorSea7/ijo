@@ -173,7 +173,7 @@ const Dashboard: React.FC = () => {
                 </div>
                 
                 <div className="flex bg-slate-900 rounded-lg p-1 border border-slate-700">
-                  {["1h", "6h", "24h", "7d", "30d"].map((range) => (
+                  {["1j", "6j", "24j", "7h", "30h"].map((range) => (
                     <button
                       key={range}
                       onClick={() => setAnalyticsRange(range)}
