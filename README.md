@@ -96,7 +96,7 @@ npm run dev
    // MQTT Broker
    const char* MQTT_SERVER    = "alamat_broker_anda";
    const int   MQTT_PORT      = 8883; // Port SSL/TLS
-   const char* MQTT_CLIENT_ID = "semainode01";
+   const char* MQTT_CLIENT_ID = "zenith-node01";
    const char* MQTT_USER      = "user_mqtt";
    const char* MQTT_PASSWORD  = "pass_mqtt";
 
@@ -159,7 +159,7 @@ Proyek ini menerapkan standar keamanan industri untuk melindungi data dan akses 
 1. Pastikan port TCP dibuka.
 2. Gunakan **PM2** dengan interpreter `tsx` agar server menyala terus-menerus:
    ```bash
-   pm2 start server.ts --interpreter tsx --name semai-backend
+   pm2 start server.ts --interpreter tsx --name zenith-backend
    ```
 
 ### Frontend

@@ -184,7 +184,7 @@ export const initMqtt = (io: Server): void => {
             lampu: status_lampu,
           };
 
-          const pesanFinal = `📢 *LAPORAN SISTEM SEMAI*\n\n${pesanNotif.join("\n\n")}`;
+          const pesanFinal = `📢 *LAPORAN SISTEM ZENITH*\n\n${pesanNotif.join("\n\n")}`;
 
           axios
             .post(`https://api.telegram.org/bot${ENV.TG_TOKEN}/sendMessage`, {
