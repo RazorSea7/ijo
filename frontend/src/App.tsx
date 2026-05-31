@@ -6,15 +6,47 @@ import { Toaster } from "react-hot-toast";
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 
+const isTokenExpired = (token: string | null): boolean => {
+    if (!token) return true;
+    try {
+        const parts = token.split('.');
+        if (parts.length !== 3) return true;
+        
+        const payload = parts[1];
+        const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(
+            window.atob(base64)
+                .split('')
+                .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+                .join('')
+        );
+        
+        const { exp } = JSON.parse(jsonPayload);
+        if (!exp) return false;
+        
+        return exp < Math.floor(Date.now() / 1000);
+    } catch (e) {
+        return true;
+    }
+};
+
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
     const token = localStorage.getItem("app_token");
-    return token ? children : <Navigate to="/login" replace />;
+    if (!token || isTokenExpired(token)) {
+        localStorage.removeItem("app_token");
+        return <Navigate to="/login" replace />;
+    }
+    return <>{children}</>;
 };
 
 // KOMPONEN PENGALIH: Mencegah masuk ke Login jika SUDAH login
 const PublicRoute = ({ children }: { children: React.ReactNode }) => {
     const token = localStorage.getItem("app_token");
-    return token ? <Navigate to="/dashboard" replace /> : children;
+    if (token && isTokenExpired(token)) {
+        localStorage.removeItem("app_token");
+        return <>{children}</>;
+    }
+    return token ? <Navigate to="/dashboard" replace /> : <>{children}</>;
 };
 
 function App() {
