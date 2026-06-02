@@ -20,7 +20,7 @@ Zenith Smart System adalah sistem monitoring dan otomatisasi rumah kaca berbasis
 
 - `/frontend`: Aplikasi React + Vite + Tailwind + TypeScript.
 - `/backend`: Server Node.js + Express + MongoDB + Socket.io + TypeScript.
-- `/rumahijo_arduino`: Firmware ESP32 (C++/Arduino).
+- `/ijo_arduino`: Firmware ESP32 (C++/Arduino).
 
 ---
 
@@ -83,7 +83,7 @@ npm run dev
 
 ### 3. Firmware ESP32
 
-1. Buka file di folder `/rumahijo_arduino/rumahijo_arduino.ino` menggunakan Arduino IDE atau Arduino CLI.
+1. Buka file di folder `/ijo_arduino/rumahijo_arduino.ino` menggunakan Arduino IDE atau Arduino CLI.
 2. Edit file `config.h` dan lengkapi konfigurasi berikut:
 
    ```cpp
@@ -112,18 +112,22 @@ npm run dev
    #endif
    ```
 
-3. Install library yang dibutuhkan: `WiFiManager`, `PubSubClient`, `ArduinoJson`, `DHT sensor library`.
+3. Install library yang dibutuhkan: `WiFiManager`, `PubSubClient`, `ArduinoJson`, `Adafruit Unified Sensor`, `DHT sensor library`.
 4. Upload ke ESP32.
-5. Setelah menyala, hubungkan HP Anda ke WiFi **"Zenith Smart System"** (Pass: `admin123`) untuk mengatur koneksi internet alat.
+5. Setelah menyala, hubungkan HP Anda ke WiFi **"Zenith_SmartSystem"** (Pass: `admin123`) untuk mengatur koneksi internet alat.
 
 ---
 
 ## 🔌 API Reference
 
-Semua endpoint kecuali `/login` dilindungi oleh middleware autentikasi. Gunakan header: `Authorization: Bearer <your_token>`.
+Semua endpoint kecuali `/api/login` dilindungi oleh middleware autentikasi. Gunakan header: `Authorization: Bearer <your_token>`.
+
+### Authentication
+- `POST /api/login`: Login pengguna untuk mendapatkan token JWT (`username` & `password`).
 
 ### Telemetry & Analytics
 - `GET /api/telemetry?range=30m&bin=none`: Mendapatkan data sensor murni atau teragregasi.
+- `GET /api/telemetry/table?page=1&limit=50`: Mendapatkan log riwayat sensor terpaginasi (untuk tabel).
 - `GET /api/telemetry/analytics`: Mendapatkan ringkasan statistik harian (Suhu Max/Min, Jam Tanah Kering).
 - `GET /api/telemetry/download`: Mengunduh log sensor mentah dalam format CSV.
 
@@ -131,6 +135,7 @@ Semua endpoint kecuali `/login` dilindungi oleh middleware autentikasi. Gunakan 
 - `POST /api/control`: Mengirim perintah manual (ON/OFF/AUTO) ke relay ESP32.
 - `GET /api/settings` & `POST /api/settings`: Mengatur ambang batas sensor.
 - `POST /api/ota/upload`: Mengunggah file `.bin` untuk update firmware jarak jauh. Mengirimkan sinyal otomatis via MQTT agar ESP32 memulai unduhan FOTA.
+- `GET /api/ota/firmware.bin`: Endpoint publik untuk mengunduh firmware terunggah (diakses secara otomatis oleh ESP32 saat FOTA).
 
 ---
 
