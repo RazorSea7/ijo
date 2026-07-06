@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { io, Socket } from "socket.io-client";
-import { getTelemetry, getAnalytics, sendControl, getSettings } from "../services/api";
-import { TelemetryData, AnalyticsData, ThresholdSettings as ThresholdSettingsType } from "../types";
+import { getTelemetry, getAnalytics, sendControl, getSettings, getLoginLogs, getDeviceLogs, getNodes, backendUrl } from "../services/api";
+import { TelemetryData, AnalyticsData, ThresholdSettings as ThresholdSettingsType, LoginLogData, DeviceLogData } from "../types";
 import DashboardHeader from "../components/DashboardHeader";
 import SensorGrid from "../components/SensorGrid";
 import ActuatorGrid from "../components/ActuatorGrid";
@@ -14,11 +14,17 @@ import WeatherForecast from "../components/WeatherForecast";
 import ThresholdSettings from "../components/ThresholdSettings";
 import FotaPanel from "../components/FotaPanel";
 import toast from "react-hot-toast";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+import { Shield, User, Globe, RefreshCw, Download, ShieldCheck, ShieldAlert, Wifi, Cpu } from "lucide-react";
 
 const Dashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState("overview");
+  const [loginLogs, setLoginLogs] = useState<LoginLogData[]>([]);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const [deviceLogs, setDeviceLogs] = useState<DeviceLogData[]>([]);
+  const [isLoadingDeviceLogs, setIsLoadingDeviceLogs] = useState(false);
+  const [subLogTab, setSubLogTab] = useState<"login" | "device">("login");
+  const [nodes, setNodes] = useState<string[]>(["device0"]);
+  const [selectedNode, setSelectedNode] = useState<string>("device0");
   const [data, setData] = useState<TelemetryData>({
     suhu: 0,
     kelembapan_udara: 0,
@@ -39,12 +45,19 @@ const Dashboard: React.FC = () => {
   const [analyticsRange, setAnalyticsRange] = useState("24h");
   
   const [isOnline, setIsOnline] = useState(false);
-  const [isEspOnline, setIsEspOnline] = useState(false);
+  const [espStatuses, setEspStatuses] = useState<Record<string, boolean>>({});
+  const isEspOnline = espStatuses[selectedNode] || false;
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [thresholds, setThresholds] = useState<ThresholdSettingsType | null>(null);
+  const [otaStatus, setOtaStatus] = useState<string | null>(null);
 
   const navigate = useNavigate();
   const socketRef = useRef<Socket | null>(null);
+  const selectedNodeRef = useRef(selectedNode);
+
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+  }, [selectedNode]);
 
   const handleLogout = () => {
     localStorage.removeItem("app_token");
@@ -54,17 +67,45 @@ const Dashboard: React.FC = () => {
   };
 
   const refreshStats = () => {
-    getAnalytics()
+    getAnalytics(selectedNode)
       .then((res) => setAnalytics(res))
       .catch((err) => console.error("Stats Error:", err));
+    getNodes()
+      .then((res) => {
+        if (res && res.length > 0) setNodes(res);
+      })
+      .catch((err) => console.error("Gagal refresh list node:", err));
   };
 
-  // 1. Initial Load for Live History & Thresholds
+  // Load unique nodes on mount
   useEffect(() => {
-    getTelemetry("30m", "none").then(res => setLiveHistory(res || []));
-    refreshStats();
-    getSettings().then(res => setThresholds(res)).catch(err => console.error("Stats Error:", err));
+    getNodes()
+      .then((res) => {
+        if (res && res.length > 0) {
+          setNodes(res);
+          if (!res.includes(selectedNode)) {
+            setSelectedNode(res[0]);
+          }
+        }
+      })
+      .catch((err) => console.error("Gagal memuat list node:", err));
   }, []);
+
+  // 1. Load for Live History, Stats, and Thresholds based on selectedNode
+  useEffect(() => {
+    getTelemetry("30m", "none", selectedNode).then(res => {
+      setLiveHistory(res || []);
+      if (res && res.length > 0) {
+        const latestTime = new Date(res[res.length - 1].timestamp).getTime();
+        // If the latest data is older than 24 hours, change default analytics range to 30d
+        if (latestTime < Date.now() - 24 * 60 * 60 * 1000) {
+          setAnalyticsRange("30d");
+        }
+      }
+    });
+    refreshStats();
+    getSettings(selectedNode).then(res => setThresholds(res)).catch(err => console.error("Stats Error:", err));
+  }, [selectedNode]);
 
   // 1.5. Threshold Alert Toasts
   useEffect(() => {
@@ -81,7 +122,7 @@ const Dashboard: React.FC = () => {
     }
   }, [liveHistory, thresholds]);
 
-  // 2. Load Analytics Data when tab or range changes
+  // 2. Load Analytics Data when tab, range, or selectedNode changes
   useEffect(() => {
     if (activeTab === "analytics") {
       let bin = "5m";
@@ -89,14 +130,125 @@ const Dashboard: React.FC = () => {
       else if (analyticsRange === "7d") bin = "1h";
       else if (analyticsRange === "1h") bin = "1m";
       
-      getTelemetry(analyticsRange, bin).then(res => setAnalyticsHistory(res || []));
+      getTelemetry(analyticsRange, bin, selectedNode).then(res => setAnalyticsHistory(res || []));
     }
-  }, [activeTab, analyticsRange]);
+  }, [activeTab, analyticsRange, selectedNode]);
+
+  // Fetch Login Logs on tab change
+  const fetchLogs = () => {
+    setIsLoadingLogs(true);
+    getLoginLogs()
+      .then((res) => {
+        setLoginLogs(res || []);
+      })
+      .catch((err) => {
+        console.error("Gagal mengambil log login:", err);
+        toast.error("Gagal mengambil log login");
+      })
+      .finally(() => {
+        setIsLoadingLogs(false);
+      });
+  };
+
+  const fetchDeviceLogs = () => {
+    setIsLoadingDeviceLogs(true);
+    getDeviceLogs()
+      .then((res) => {
+        setDeviceLogs(res || []);
+      })
+      .catch((err) => {
+        console.error("Gagal mengambil log koneksi:", err);
+        toast.error("Gagal mengambil log koneksi");
+      })
+      .finally(() => {
+        setIsLoadingDeviceLogs(false);
+      });
+  };
+
+  const exportLoginLogs = () => {
+    if (loginLogs.length === 0) {
+      toast.error("Tidak ada data untuk diekspor");
+      return;
+    }
+    const headers = ["Waktu", "Username", "IP Address", "Status"];
+    const csvRows = [headers.join(",")];
+    for (const log of loginLogs) {
+      const row = [
+        new Date(log.timestamp).toISOString(),
+        log.username,
+        log.ip_address,
+        log.status
+      ];
+      const escaped = row.map(val => {
+        const s = String(val);
+        if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      });
+      csvRows.push(escaped.join(","));
+    }
+    const csvString = csvRows.join("\n");
+    const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `log_login_${new Date().toISOString().split("T")[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success("Berhasil mengekspor log login");
+  };
+
+  const exportDeviceLogs = () => {
+    if (deviceLogs.length === 0) {
+      toast.error("Tidak ada data untuk diekspor");
+      return;
+    }
+    const headers = ["Waktu", "Device ID", "Event"];
+    const csvRows = [headers.join(",")];
+    for (const log of deviceLogs) {
+      const row = [
+        new Date(log.timestamp).toISOString(),
+        log.device_id,
+        log.event
+      ];
+      const escaped = row.map(val => {
+        const s = String(val);
+        if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      });
+      csvRows.push(escaped.join(","));
+    }
+    const csvString = csvRows.join("\n");
+    const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `log_device_${new Date().toISOString().split("T")[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success("Berhasil mengekspor log koneksi");
+  };
+
+  useEffect(() => {
+    if (activeTab === "logs") {
+      fetchLogs();
+      fetchDeviceLogs();
+    }
+  }, [activeTab]);
+
+
 
   // 3. Socket.io Connection
   useEffect(() => {
     const token = localStorage.getItem("app_token");
-    const socket = io(API_URL, {
+    const socket = io(backendUrl, {
       auth: { token },
       transports: ["polling", "websocket"], // Mulai dengan polling untuk stabilitas, lalu upgrade
       reconnection: true,
@@ -109,11 +261,21 @@ const Dashboard: React.FC = () => {
     socket.on("connect", () => setIsOnline(true));
     socket.on("disconnect", () => setIsOnline(false));
 
-    socket.on("esp_status", (online: boolean) => {
-      setIsEspOnline(online);
+    socket.on("esp_statuses", (statuses: Record<string, boolean>) => {
+      setEspStatuses(statuses);
     });
 
-    socket.on("telemetry_live", (payload: TelemetryData) => {
+    socket.on("esp_status", (payload: { device_id: string; online: boolean }) => {
+      setEspStatuses((prev) => ({ ...prev, [payload.device_id]: payload.online }));
+    });
+
+    socket.on("ota_status", (status: string) => {
+      setOtaStatus(status);
+    });
+
+    socket.on("telemetry_live", (payload: TelemetryData & { device_id?: string }) => {
+      if (payload.device_id && payload.device_id !== selectedNodeRef.current) return;
+
       const dataWithTime = {
         ...payload,
         timestamp: payload.timestamp || new Date().toISOString(),
@@ -137,7 +299,7 @@ const Dashboard: React.FC = () => {
 
   const handleControl = async (device: string, mode: number) => {
     try {
-      await sendControl(device, mode);
+      await sendControl(device, mode, selectedNode);
     } catch (err) {
       console.error(`[Override] Gagal mengontrol ${device}:`, err);
     }
@@ -149,7 +311,7 @@ const Dashboard: React.FC = () => {
         return (
           <div className="space-y-8 animate-in fade-in duration-500">
             <SensorGrid data={data} />
-            <ActuatorGrid data={data} onControl={handleControl} />
+            <ActuatorGrid data={data} thresholds={thresholds} onControl={handleControl} />
             
             <div className="bg-slate-800 p-4 sm:p-6 rounded-3xl shadow-xl border border-slate-700/50">
               <h2 className="text-lg sm:text-xl font-bold text-white mb-4 sm:mb-6">Grafik Real-time</h2>
@@ -191,7 +353,7 @@ const Dashboard: React.FC = () => {
               <HistoryChart data={analyticsHistory} />
             </div>
 
-            <TelemetryTable />
+            <TelemetryTable selectedNode={selectedNode} thresholds={thresholds} />
           </div>
         );
       case "weather":
@@ -203,10 +365,316 @@ const Dashboard: React.FC = () => {
       case "settings":
         return (
           <div className="space-y-8 animate-in fade-in duration-500">
-            <ThresholdSettings />
-            <FotaPanel />
+            <ThresholdSettings 
+              selectedNode={selectedNode} 
+              thresholds={thresholds} 
+              onThresholdsChange={setThresholds} 
+            />
+            <FotaPanel otaStatus={otaStatus} selectedNode={selectedNode} />
           </div>
         );
+      case "logs": {
+        const successCount = loginLogs.filter(l => l.status === "SUCCESS").length;
+        const failedCount = loginLogs.filter(l => l.status === "FAILED").length;
+        const latestLogin = loginLogs.find(l => l.status === "SUCCESS");
+        const latestIp = latestLogin ? latestLogin.ip_address : "-";
+        const disconnectCount = deviceLogs.filter(d => d.event === "OFFLINE").length;
+
+        const activeLogsCount = subLogTab === "login" ? loginLogs.length : deviceLogs.length;
+        const isCurrentlyLoading = subLogTab === "login" ? isLoadingLogs : isLoadingDeviceLogs;
+
+        return (
+          <div className="space-y-8 animate-in fade-in duration-500">
+            {/* STATS CARDS SECTION */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+              {/* Card 1: Sukses Login */}
+              <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/50 flex items-center gap-4 shadow-lg hover:border-slate-600 transition-all duration-300">
+                <div className="bg-emerald-500/10 p-3 rounded-xl text-emerald-400">
+                  <ShieldCheck size={24} />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Akses Berhasil</p>
+                  <h3 className="text-2xl font-bold text-white mt-1">{successCount}</h3>
+                </div>
+              </div>
+
+              {/* Card 2: Percobaan Gagal */}
+              <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/50 flex items-center gap-4 shadow-lg hover:border-slate-600 transition-all duration-300">
+                <div className="bg-rose-500/10 p-3 rounded-xl text-rose-400">
+                  <ShieldAlert size={24} />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Percobaan Gagal</p>
+                  <h3 className="text-2xl font-bold text-white mt-1">{failedCount}</h3>
+                </div>
+              </div>
+
+              {/* Card 3: Diskoneksi IoT */}
+              <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/50 flex items-center gap-4 shadow-lg hover:border-slate-600 transition-all duration-300">
+                <div className="bg-amber-500/10 p-3 rounded-xl text-amber-400">
+                  <Wifi size={24} />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Koneksi Putus IoT</p>
+                  <h3 className="text-2xl font-bold text-white mt-1">{disconnectCount} Kali</h3>
+                </div>
+              </div>
+
+              {/* Card 4: IP Terakhir */}
+              <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700/50 flex items-center gap-4 shadow-lg hover:border-slate-600 transition-all duration-300">
+                <div className="bg-blue-500/10 p-3 rounded-xl text-blue-400">
+                  <Globe size={24} />
+                </div>
+                <div>
+                  <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">IP Akses Sukses</p>
+                  <h3 className="text-base font-bold text-white mt-1 font-mono truncate max-w-[150px]">{latestIp}</h3>
+                </div>
+              </div>
+            </div>
+
+            {/* TAB SELECTORS */}
+            <div className="flex bg-slate-900/60 p-1.5 rounded-2xl border border-slate-800/80 max-w-xs shadow-inner">
+              <button
+                onClick={() => setSubLogTab("login")}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-bold rounded-xl transition-all duration-200 ${
+                  subLogTab === "login"
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-600/10"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <User size={14} />
+                <span>Akses Akun</span>
+              </button>
+              <button
+                onClick={() => setSubLogTab("device")}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-bold rounded-xl transition-all duration-200 ${
+                  subLogTab === "device"
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-600/10"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <Cpu size={14} />
+                <span>Koneksi ESP32</span>
+              </button>
+            </div>
+
+            {/* CENTRAL LOGS CONTAINER */}
+            <div className="bg-slate-800 rounded-3xl shadow-xl overflow-hidden border border-slate-700/50">
+              <div className="p-6 border-b border-slate-700/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold text-white flex items-center gap-2">
+                    {subLogTab === "login" ? (
+                      <>
+                        <Shield className="text-blue-400" size={24} />
+                        Log Percobaan Masuk (Login)
+                      </>
+                    ) : (
+                      <>
+                        <Cpu className="text-blue-400" size={24} />
+                        Log Koneksi & Status ESP32
+                      </>
+                    )}
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {subLogTab === "login"
+                      ? "Memantau riwayat akses akun dan IP address percobaan login ke sistem."
+                      : "Memantau aktivitas status online/offline modul sensor ESP32."}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-end">
+                  <button
+                    onClick={subLogTab === "login" ? exportLoginLogs : exportDeviceLogs}
+                    disabled={isCurrentlyLoading || activeLogsCount === 0}
+                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl transition-colors disabled:opacity-50 text-sm shadow-lg shadow-emerald-600/15 cursor-pointer"
+                  >
+                    <Download size={16} />
+                    <span>Ekspor CSV</span>
+                  </button>
+                  <button
+                    onClick={subLogTab === "login" ? fetchLogs : fetchDeviceLogs}
+                    disabled={isCurrentlyLoading}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl border border-slate-700 transition-colors disabled:opacity-50 text-sm cursor-pointer"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isCurrentlyLoading ? 'animate-spin' : ''}`} />
+                    <span>Segarkan</span>
+                  </button>
+                  <span className="text-sm text-slate-400 bg-slate-900 px-3 py-2 rounded-xl border border-slate-700 font-mono">
+                    Total: {activeLogsCount} Entri
+                  </span>
+                </div>
+              </div>
+
+              {/* DYNAMIC LOG TABLES */}
+              {subLogTab === "login" ? (
+                <div className="overflow-x-auto max-h-125 overflow-y-auto custom-scrollbar">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-900/50 text-slate-400 text-xs uppercase tracking-wider">
+                        <th className="px-6 py-4 font-medium">Pengguna</th>
+                        <th className="px-6 py-4 font-medium">Alamat IP</th>
+                        <th className="px-6 py-4 font-medium text-center">Status</th>
+                        <th className="px-6 py-4 font-medium">Waktu Percobaan</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700/50">
+                      {loginLogs.map((log) => (
+                        <tr 
+                          key={log._id} 
+                          className="hover:bg-slate-700/30 transition-colors group"
+                        >
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <div className="bg-slate-700/50 p-1.5 rounded-lg text-slate-400 group-hover:text-blue-400 transition-colors">
+                                <User size={14} />
+                              </div>
+                              <span className="text-sm font-semibold text-slate-200">
+                                {log.username}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <div className="bg-slate-700/50 p-1.5 rounded-lg text-slate-400 group-hover:text-blue-400 transition-colors">
+                                <Globe size={14} />
+                              </div>
+                              <span className="text-sm font-mono text-slate-300">
+                                {log.ip_address}
+                              </span>
+                              {log.ip_address === "127.0.0.1" || log.ip_address === "::1" || log.ip_address === "::ffff:127.0.0.1" ? (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-900 text-slate-500 font-medium">
+                                  Lokal
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border transition-colors ${
+                              log.status === "SUCCESS" 
+                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
+                                : "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                            }`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                log.status === "SUCCESS" ? "bg-emerald-400" : "bg-rose-400"
+                              }`} />
+                              {log.status === "SUCCESS" ? "BERHASIL" : "GAGAL"}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-sm text-slate-300 font-mono">
+                              {new Date(log.timestamp).toLocaleTimeString("id-ID", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                second: "2-digit"
+                              })}
+                            </div>
+                            <div className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">
+                              {new Date(log.timestamp).toLocaleDateString("id-ID", {
+                                day: "2-digit",
+                                month: "long",
+                                year: "numeric"
+                              })}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="overflow-x-auto max-h-125 overflow-y-auto custom-scrollbar">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-900/50 text-slate-400 text-xs uppercase tracking-wider">
+                        <th className="px-6 py-4 font-medium">Perangkat ID</th>
+                        <th className="px-6 py-4 font-medium text-center">Status Event</th>
+                        <th className="px-6 py-4 font-medium">Waktu Kejadian</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700/50">
+                      {deviceLogs.map((log) => (
+                        <tr 
+                          key={log._id} 
+                          className="hover:bg-slate-700/30 transition-colors group"
+                        >
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <div className="bg-slate-700/50 p-1.5 rounded-lg text-slate-400 group-hover:text-blue-400 transition-colors">
+                                <Cpu size={14} />
+                              </div>
+                              <span className="text-sm font-semibold text-slate-200 font-mono">
+                                {log.device_id}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border transition-colors ${
+                              log.event === "ONLINE" 
+                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
+                                : "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                            }`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                log.event === "ONLINE" ? "bg-emerald-400" : "bg-rose-400"
+                              }`} />
+                              {log.event === "ONLINE" ? "TERHUBUNG" : "TERPUTUS"}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-sm text-slate-300 font-mono">
+                              {new Date(log.timestamp).toLocaleTimeString("id-ID", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                second: "2-digit"
+                              })}
+                            </div>
+                            <div className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">
+                              {new Date(log.timestamp).toLocaleDateString("id-ID", {
+                                day: "2-digit",
+                                month: "long",
+                                year: "numeric"
+                              })}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* EMPTY LOGS STATE */}
+              {activeLogsCount === 0 && !isCurrentlyLoading && (
+                <div className="p-12 text-center text-slate-500 flex flex-col items-center justify-center gap-2 animate-in fade-in duration-300">
+                  <Shield size={36} className="text-slate-600 mb-2" />
+                  <p className="font-semibold text-slate-400">
+                    {subLogTab === "login" ? "Belum ada riwayat masuk" : "Belum ada riwayat konektivitas perangkat"}
+                  </p>
+                  <p className="text-xs text-slate-600">
+                    {subLogTab === "login" 
+                      ? "Semua aktivitas login akan terekam dan ditampilkan di sini." 
+                      : "Semua aktivitas status online/offline modul sensor ESP32 akan terekam di sini."}
+                  </p>
+                </div>
+              )}
+
+              {/* LOADING STATE */}
+              {isCurrentlyLoading && activeLogsCount === 0 && (
+                <div className="p-12 text-center text-slate-500 flex flex-col items-center justify-center gap-2 animate-in fade-in duration-300">
+                  <RefreshCw className="animate-spin text-blue-500 mb-2" size={32} />
+                  <p className="font-semibold text-slate-400">Sedang memuat data log...</p>
+                </div>
+              )}
+              
+              <div className="p-4 bg-slate-900/30 text-center border-t border-slate-700/50">
+                <p className="text-[11px] text-slate-500 italic">
+                  {subLogTab === "login"
+                    ? "* Menampilkan hingga 50 aktivitas login terakhir demi keamanan dan performa optimal."
+                    : "* Menampilkan hingga 50 aktivitas status koneksi ESP32 terakhir demi performa optimal."}
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      }
       default:
         return null;
     }
@@ -226,7 +694,9 @@ const Dashboard: React.FC = () => {
             isOnline={isOnline}
             isEspOnline={isEspOnline}
             onLogout={handleLogout}
-            activeRange={analyticsRange}
+            nodes={nodes}
+            selectedNode={selectedNode}
+            setSelectedNode={setSelectedNode}
           />
           
           {renderContent()}

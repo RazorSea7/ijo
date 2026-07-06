@@ -3,10 +3,11 @@ import axios from "axios";
 import { Server } from "socket.io";
 import Telemetry from "../models/Telemetry.js";
 import { ENV } from "../config/env.js";
+import DeviceLog from "../models/DeviceLog.js";
 
 let mqttClient: MqttClient | undefined;
-let espOnline = false;
-let espTimeout: NodeJS.Timeout;
+const onlineDevices = new Map<string, boolean>();
+const deviceTimeouts = new Map<string, NodeJS.Timeout>();
 let lastReportedStates = {
   kipas: false,
   pompa: false,
@@ -55,31 +56,56 @@ export const initMqtt = (io: Server): void => {
   mqttClient.on("message", async (topic, message) => {
     if (topic === "smartfarm/telemetry") {
       try {
-        if (!espOnline) {
-          espOnline = true;
-          io.emit("esp_status", true);
-        }
-        const data = JSON.parse(message.toString());
+        const raw = JSON.parse(message.toString());
+        const deviceId = raw.id || "device0";
 
         // Jika ini adalah pesan status OTA, update ke frontend dan abaikan penyimpanan DB
-        if (data.state_ota) {
-          io.emit("ota_status", data.state_ota);
+        if (raw.state_ota) {
+          io.emit("ota_status", raw.state_ota);
           return;
         }
 
-        // INJEKSI SERVER TIME agar data selalu punya timestamp valid
-        data.timestamp = new Date().toISOString();
+        if (!onlineDevices.get(deviceId)) {
+          onlineDevices.set(deviceId, true);
+          io.emit("esp_status", { device_id: deviceId, online: true });
+          DeviceLog.create({ device_id: deviceId, event: "ONLINE" }).catch((err) =>
+            console.error("Gagal menyimpan log koneksi:", err)
+          );
+        }
+
+        // Map shortened JSON keys from the firmware back to the full database schema keys
+        const data = {
+          device_id: deviceId,
+          suhu: raw.t,
+          kelembapan_udara: raw.h,
+          tanah: raw.s,
+          cahaya: raw.l,
+          status_kipas: raw.sk,
+          state_kipas: raw.ek,
+          status_pompa: raw.sp,
+          state_pompa: raw.ep,
+          status_lampu: raw.sl,
+          state_lampu: raw.el,
+          timestamp: new Date().toISOString(),
+        };
         
         // TETAP KIRIM KE FRONTEND SECARA LIVE agar UI terasa responsif
         io.emit("telemetry_live", data);
 
         // Heartbeat Logic
-        clearTimeout(espTimeout);
-        espTimeout = setTimeout(() => {
-          espOnline = false;
-          io.emit("esp_status", false);
-          console.log("⚠️ ESP32 Offline (Timeout)");
+        const oldTimeout = deviceTimeouts.get(deviceId);
+        if (oldTimeout) clearTimeout(oldTimeout);
+
+        const newTimeout = setTimeout(() => {
+          onlineDevices.set(deviceId, false);
+          io.emit("esp_status", { device_id: deviceId, online: false });
+          console.log(`⚠️ ESP32 Offline: ${deviceId} (Timeout)`);
+          DeviceLog.create({ device_id: deviceId, event: "OFFLINE" }).catch((err) =>
+            console.error("Gagal menyimpan log diskoneksi:", err)
+          );
         }, 30000);
+
+        deviceTimeouts.set(deviceId, newTimeout);
 
         // 1. Parsing & Destructuring data
         const {
@@ -119,22 +145,7 @@ export const initMqtt = (io: Server): void => {
 
         // 2. Simpan ke Database JIKA lolos filter
         if (isSignificantChange || isTimeForced) {
-          await Telemetry.create({
-            device_id: device_id || "ESP32_MAIN",
-            suhu: pSuhu,
-            kelembapan_udara: pKelembapan,
-            tanah: pTanah,
-            cahaya: pCahaya,
-            status_kipas,
-            status_pompa,
-            status_lampu,
-            state_kipas,
-            state_pompa,
-            state_lampu,
-            timestamp: data.timestamp, // Gunakan timestamp yang sama dengan socket
-          });
-
-          // Update data terakhir yang disimpan
+          // Update save trackers immediately before yielding to prevent async duplicate writes
           lastSaveTime = now;
           lastSavedData = {
             suhu: pSuhu,
@@ -145,6 +156,21 @@ export const initMqtt = (io: Server): void => {
             status_pompa,
             status_lampu,
           };
+
+          await Telemetry.create({
+            device_id: device_id || "device0",
+            suhu: pSuhu,
+            kelembapan_udara: pKelembapan,
+            tanah: pTanah,
+            cahaya: pCahaya,
+            status_kipas,
+            status_pompa,
+            status_lampu,
+            state_kipas,
+            state_pompa,
+            state_lampu,
+            timestamp: data.timestamp,
+          });
           
           console.log(`💾 Saved to DB (Trigger: ${isSignificantChange ? 'Data Changed' : 'Time Forced'})`);
         }
@@ -202,4 +228,10 @@ export const initMqtt = (io: Server): void => {
 };
 
 export const getMqttClient = (): MqttClient | undefined => mqttClient;
-export const isEspOnline = (): boolean => espOnline;
+export const getOnlineDevices = (): Record<string, boolean> => {
+  const obj: Record<string, boolean> = {};
+  onlineDevices.forEach((val, key) => {
+    obj[key] = val;
+  });
+  return obj;
+};

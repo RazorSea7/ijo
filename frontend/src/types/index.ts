@@ -22,6 +22,7 @@ export interface AnalyticsData {
 }
 
 export interface ThresholdSettings {
+  device_id?: string;
   temp_threshold: number;
   hum_threshold: number;
   light_threshold: number;
@@ -32,3 +33,20 @@ export interface ControlPayload {
   device: "kipas" | "pompa" | "lampu";
   status: boolean;
 }
+
+export interface LoginLogData {
+  _id: string;
+  username: string;
+  ip_address: string;
+  status: "SUCCESS" | "FAILED";
+  timestamp: string;
+}
+
+export interface DeviceLogData {
+  _id: string;
+  device_id: string;
+  event: "ONLINE" | "OFFLINE";
+  timestamp: string;
+}
+
+

@@ -1,7 +1,7 @@
 import express, { type Request, type Response } from "express";
-import { Parser } from "json2csv";
 import Telemetry from "../models/Telemetry.js";
 import { authenticateToken } from "../middlewares/authMiddleware.js";
+import DeviceLog from "../models/DeviceLog.js";
 
 const router = express.Router();
 
@@ -12,17 +12,31 @@ router.get(
     try {
       const rangeStr = (req.query.range as string) || "30m";
       const binStr = (req.query.bin as string) || "none";
+      const device_id = (req.query.device_id as string) || "device0";
 
       let msRange = 30 * 60 * 1000;
       if (rangeStr.endsWith("m")) msRange = parseInt(rangeStr) * 60 * 1000;
       else if (rangeStr.endsWith("h")) msRange = parseInt(rangeStr) * 60 * 60 * 1000;
       else if (rangeStr.endsWith("d")) msRange = parseInt(rangeStr) * 24 * 60 * 60 * 1000;
 
-      const startTime = new Date(Date.now() - msRange);
+      let endTime = new Date();
+      const latestDoc = await Telemetry.findOne({ device_id }).sort({ timestamp: -1 }).lean();
+      if (latestDoc) {
+        const latestTime = new Date(latestDoc.timestamp);
+        // If the latest data is older than 10 minutes, adjust the query end time
+        if (latestTime.getTime() < Date.now() - 10 * 60 * 1000) {
+          endTime = latestTime;
+        }
+      }
+      const startTime = new Date(endTime.getTime() - msRange);
+      if (rangeStr.endsWith("d")) {
+        startTime.setHours(0, 0, 0, 0);
+      }
+
       let result;
 
       if (binStr === "none") {
-        result = await Telemetry.find({ timestamp: { $gte: startTime } }).sort({ timestamp: 1 });
+        result = await Telemetry.find({ device_id, timestamp: { $gte: startTime, $lte: endTime } }).sort({ timestamp: 1 }).lean();
       } else {
         let binUnit = "minute";
         let binSize = 5;
@@ -39,7 +53,7 @@ router.get(
         }
 
         result = await Telemetry.aggregate([
-          { $match: { timestamp: { $gte: startTime } } },
+          { $match: { device_id, timestamp: { $gte: startTime, $lte: endTime } } },
           {
             $group: {
               _id: {
@@ -82,7 +96,7 @@ router.get(
       }
 
       if (result.length === 0) {
-        const fallbackData = await Telemetry.find().sort({ timestamp: -1 }).limit(20);
+        const fallbackData = await Telemetry.find({ device_id }).sort({ timestamp: -1 }).limit(20).lean();
         result = fallbackData.reverse();
       }
 
@@ -101,11 +115,12 @@ router.get(
     try {
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 50;
+      const device_id = (req.query.device_id as string) || "device0";
       const skip = (page - 1) * limit;
 
       const [docs, total] = await Promise.all([
-        Telemetry.find().sort({ timestamp: -1 }).skip(skip).limit(limit),
-        Telemetry.countDocuments()
+        Telemetry.find({ device_id }).sort({ timestamp: -1 }).skip(skip).limit(limit).lean(),
+        Telemetry.countDocuments({ device_id })
       ]);
 
       res.json({ docs, total, page, totalPages: Math.ceil(total / limit) });
@@ -120,48 +135,77 @@ router.get(
   authenticateToken,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const rangeStr = (req.query.range as string) || "24h";
-
-      let msRange = 24 * 60 * 60 * 1000;
-      if (rangeStr.endsWith("m")) msRange = parseInt(rangeStr) * 60 * 1000;
-      else if (rangeStr.endsWith("h")) msRange = parseInt(rangeStr) * 60 * 60 * 1000;
-      else if (rangeStr.endsWith("d")) msRange = parseInt(rangeStr) * 24 * 60 * 60 * 1000;
-
-      const startTime = new Date(Date.now() - msRange);
-      
-      // Export mentah (tanpa binning) agar data excel lengkap dan akurat
-      const docs = await Telemetry.find({ timestamp: { $gte: startTime } }).sort({ timestamp: 1 });
-
-      if (docs.length === 0) {
+      const device_id = (req.query.device_id as string) || "device0";
+      // Check if any data exists at all
+      const hasData = await Telemetry.exists({ device_id });
+      if (!hasData) {
         res.status(404).send("Data masih kosong, belum bisa download.");
         return;
       }
 
-      const fields = [
-        { label: "Waktu", value: "timestamp" },
-        { label: "Suhu (°C)", value: "suhu" },
-        { label: "Kelembapan Udara (%)", value: "kelembapan_udara" },
-        { label: "Kelembapan Tanah (%)", value: "tanah" },
-        { label: "Intensitas Cahaya (%)", value: "cahaya" },
-        { label: "Status Kipas", value: "status_kipas" },
-        { label: "State Kipas", value: "state_kipas" },
-        { label: "Status Pompa", value: "status_pompa" },
-        { label: "State Pompa", value: "state_pompa" },
-        { label: "Status Lampu", value: "status_lampu" },
-        { label: "State Lampu", value: "state_lampu" },
-      ];
-
-      const json2csvParser = new Parser({ fields });
-      const csv = json2csvParser.parse(docs);
-
-      const fileName = `log_smartfarm_${new Date().toISOString().split("T")[0]}.csv`;
-
+      const fileName = `log_smartfarm_${device_id}_${new Date().toISOString().split("T")[0]}.csv`;
       res.header("Content-Type", "text/csv");
       res.attachment(fileName);
-      res.send(csv);
+
+      // CSV headers matching the field mappings
+      const headers = [
+        "Waktu",
+        "Suhu (°C)",
+        "Kelembapan Udara (%)",
+        "Kelembapan Tanah (%)",
+        "Intensitas Cahaya (%)",
+        "Status Kipas",
+        "State Kipas",
+        "Status Pompa",
+        "State Pompa",
+        "Status Lampu",
+        "State Lampu"
+      ];
+      res.write(headers.join(",") + "\n");
+
+      // Stream all data from MongoDB sorted by timestamp
+      const cursor = Telemetry.find({ device_id }).sort({ timestamp: 1 }).lean().cursor();
+
+      // Ensure cursor is closed if the request is aborted
+      req.on("close", () => {
+        cursor.close();
+      });
+
+      for await (const doc of cursor) {
+        const row = [
+          doc.timestamp ? new Date(doc.timestamp).toISOString() : "",
+          doc.suhu !== undefined && doc.suhu !== null ? doc.suhu : "",
+          doc.kelembapan_udara !== undefined && doc.kelembapan_udara !== null ? doc.kelembapan_udara : "",
+          doc.tanah !== undefined && doc.tanah !== null ? doc.tanah : "",
+          doc.cahaya !== undefined && doc.cahaya !== null ? doc.cahaya : "",
+          doc.status_kipas !== undefined && doc.status_kipas !== null ? doc.status_kipas : "",
+          doc.state_kipas !== undefined && doc.state_kipas !== null ? doc.state_kipas : "",
+          doc.status_pompa !== undefined && doc.status_pompa !== null ? doc.status_pompa : "",
+          doc.state_pompa !== undefined && doc.state_pompa !== null ? doc.state_pompa : "",
+          doc.status_lampu !== undefined && doc.status_lampu !== null ? doc.status_lampu : "",
+          doc.state_lampu !== undefined && doc.state_lampu !== null ? doc.state_lampu : ""
+        ];
+
+        // Format and escape CSV values to handle commas or quotes
+        const escapedRow = row.map(val => {
+          const s = String(val);
+          if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+            return `"${s.replace(/"/g, '""')}"`;
+          }
+          return s;
+        });
+
+        res.write(escapedRow.join(",") + "\n");
+      }
+
+      res.end();
     } catch (err) {
       console.error("Gagal download CSV:", err);
-      res.status(500).send("Internal Server Error");
+      if (!res.headersSent) {
+        res.status(500).send("Internal Server Error");
+      } else {
+        res.end();
+      }
     }
   },
 );
@@ -171,17 +215,18 @@ router.get(
   authenticateToken,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const satuHariLalu = new Date(Date.now() - 24 * 60 * 60 * 1000);
-
-      const countCheck = await Telemetry.countDocuments({
-        timestamp: { $gte: satuHariLalu },
-      });
-
-      let filter: Record<string, unknown> = { timestamp: { $gte: satuHariLalu } };
-      if (countCheck === 0) {
-        filter = {};
-        console.log("⚠️ Data 24j kosong, menggunakan mode Global Scan");
+      const device_id = (req.query.device_id as string) || "device0";
+      let endTime = new Date();
+      const latestDoc = await Telemetry.findOne({ device_id }).sort({ timestamp: -1 }).lean();
+      if (latestDoc) {
+        const latestTime = new Date(latestDoc.timestamp);
+        if (latestTime.getTime() < Date.now() - 10 * 60 * 1000) {
+          endTime = latestTime;
+        }
       }
+      const startTime = new Date(endTime.getTime() - 24 * 60 * 60 * 1000);
+
+      const filter = { device_id, timestamp: { $gte: startTime, $lte: endTime } };
 
       const [statsResult, docTerendah, totalSemua] = await Promise.all([
         Telemetry.aggregate([
@@ -197,8 +242,8 @@ router.get(
         ]),
         Telemetry.findOne(filter).sort({
           tanah: 1,
-        }),
-        Telemetry.countDocuments({}), // Total data seluruh waktu
+        }).lean(),
+        Telemetry.countDocuments({ device_id }), // Total data seluruh waktu
       ]);
 
       const stats = statsResult[0];
@@ -233,6 +278,36 @@ router.get(
       res.status(500).json({ error: "Gagal mengambil data analitik" });
     }
   },
+);
+
+router.get(
+  "/nodes",
+  authenticateToken,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const nodes = await Telemetry.distinct("device_id");
+      const cleanNodes = nodes.filter(n => n && n !== "UNKNOWN");
+      if (cleanNodes.length === 0) {
+        cleanNodes.push("device0");
+      }
+      res.json(cleanNodes);
+    } catch (err: unknown) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  }
+);
+
+router.get(
+  "/device-logs",
+  authenticateToken,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const logs = await DeviceLog.find().sort({ timestamp: -1 }).limit(50).lean();
+      res.json(logs);
+    } catch (err: unknown) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  }
 );
 
 export default router;
