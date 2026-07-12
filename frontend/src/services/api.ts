@@ -223,3 +223,28 @@ export const getNodes = async (): Promise<string[]> => {
   const response = await apiClient.get<string[]>("/telemetry/nodes");
   return response.data;
 };
+
+export interface ChatMessage {
+  role: "user" | "model";
+  text: string;
+}
+
+export interface ChatResponse {
+  message: string;
+  actionTriggered?: string;
+  thresholds?: any;
+}
+
+export const chatWithAI = async (
+  message: string,
+  device_id = "device0",
+  history: ChatMessage[] = [],
+): Promise<ChatResponse> => {
+  const response = await apiClient.post<ChatResponse>("/ai/chat", {
+    message,
+    device_id,
+    history,
+  });
+  return response.data;
+};
+

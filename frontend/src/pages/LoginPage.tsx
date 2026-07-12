@@ -35,9 +35,15 @@ const LoginPage: React.FC = () => {
       <div className="w-full max-w-md bg-slate-900 p-10 rounded-3xl shadow-2xl border border-slate-800 text-center">
         {/* Icon & Title */}
         <div className="mb-4 flex justify-center">
-          <img src={greenhouseIcon} alt="Greenhouse" className="w-24 h-24" />
+                    <img
+                        src={greenhouseIcon}
+                        alt="Greenhouse"
+                        className="w-24 h-24"
+                    />
         </div>
-        <h2 className="text-3xl font-bold tracking-tight mb-2">ZENITH Login</h2>
+                <h2 className="text-3xl font-bold tracking-tight mb-2">
+                    ZENITH Login
+                </h2>
         <p className="text-slate-400 text-sm mb-8">
           Masukkan password untuk akses kontrol sistem
         </p>
