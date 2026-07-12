@@ -1,8 +1,8 @@
-# 🌱 SEMAI Smart Farm — Enterprise IoT Dashboard
+# 🌱 Zenith Smart System — Enterprise IoT Dashboard
 
 ![Smart Farm Dashboard Mockup](preview.png)
 
-SEMAI Smart Farm adalah sistem monitoring dan otomatisasi rumah kaca berbasis IoT yang modern, responsif, dan _type-safe_. Proyek ini mencakup ekosistem lengkap mulai dari **Firmware (ESP32)**, **Backend (Node.js/TypeScript)**, hingga **Frontend (React/TypeScript)**.
+Zenith Smart System adalah sistem monitoring dan otomatisasi rumah kaca berbasis IoT yang modern, responsif, dan _type-safe_. Proyek ini mencakup ekosistem lengkap mulai dari **Firmware (ESP32)**, **Backend (Node.js/TypeScript)**, hingga **Frontend (React/TypeScript)**.
 
 ## ✨ Fitur Utama
 
@@ -24,7 +24,7 @@ SEMAI Smart Farm adalah sistem monitoring dan otomatisasi rumah kaca berbasis Io
 
 - `/frontend`: Aplikasi React + Vite + Tailwind + TypeScript.
 - `/backend`: Server Node.js + Express + MongoDB + Socket.io + TypeScript.
-- `/rumahijo_arduino`: Firmware ESP32 (C++/Arduino).
+- `/ijo_arduino`: Firmware ESP32 (C++/Arduino).
 
 ---
 
@@ -87,7 +87,7 @@ npm run dev
 
 ### 3. Firmware ESP32
 
-1. Buka file di folder `/rumahijo_arduino/rumahijo_arduino.ino` menggunakan Arduino IDE atau Arduino CLI.
+1. Buka file di folder `/ijo_arduino/rumahijo_arduino.ino` menggunakan Arduino IDE atau Arduino CLI.
 2. Edit file `config.h` dan lengkapi konfigurasi berikut:
 
    ```cpp
@@ -100,7 +100,7 @@ npm run dev
    // MQTT Broker
    const char* MQTT_SERVER    = "alamat_broker_anda";
    const int   MQTT_PORT      = 8883; // Port SSL/TLS
-   const char* MQTT_CLIENT_ID = "semainode01";
+   const char* MQTT_CLIENT_ID = "zenith-node01";
    const char* MQTT_USER      = "user_mqtt";
    const char* MQTT_PASSWORD  = "pass_mqtt";
 
@@ -116,9 +116,9 @@ npm run dev
    #endif
    ```
 
-3. Install library yang dibutuhkan: `WiFiManager`, `PubSubClient`, `ArduinoJson`, `DHT sensor library`.
+3. Install library yang dibutuhkan: `WiFiManager`, `PubSubClient`, `ArduinoJson`, `Adafruit Unified Sensor`, `DHT sensor library`.
 4. Upload ke ESP32.
-5. Setelah menyala, hubungkan HP Anda ke WiFi **"SEMAI-SmartFarm"** (Pass: `admin123`) untuk mengatur koneksi internet alat.
+5. Setelah menyala, hubungkan HP Anda ke WiFi **"Zenith_SmartSystem"** (Pass: `admin123`) untuk mengatur koneksi internet alat.
 
 ---
 
@@ -175,7 +175,7 @@ Proyek ini menerapkan standar keamanan industri untuk melindungi data dan akses 
 1. Pastikan port TCP dibuka.
 2. Gunakan **PM2** dengan interpreter `tsx` agar server menyala terus-menerus:
    ```bash
-   pm2 start server.ts --interpreter tsx --name semai-backend
+   pm2 start server.ts --interpreter tsx --name zenith-backend
    ```
 
 ### Frontend
@@ -190,4 +190,4 @@ Proyek ini menerapkan standar keamanan industri untuk melindungi data dan akses 
 
 Proyek ini bersifat open-source. Silakan modifikasi sesuai kebutuhan Anda.
 
-**SEMAI - Solusi Modern Pertanian Indonesia**
+**ZENITH - Solusi Modern Pertanian Indonesia**
